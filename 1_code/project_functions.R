@@ -59,6 +59,10 @@ simulate_dgp <- function(X, dgp_index){
   # the index of the DGP in X; eg. for dgp_index = 1, values used in the simulation
   # are taken from "X$DGP_1$..."
   
+  # check if input has the expected properties, stop with error if not
+  stopifnot(class(X) == "list", class(coefs) == "numeric")
+  
+  
   # take parameters from "X$DGP_[n]$dgp_parameters:
   ts_length <- X[[dgp_index]]$dgp_param$ts_length
   coefs <- X[[dgp_index]]$dgp_param$coefs
@@ -75,7 +79,9 @@ simulate_dgp <- function(X, dgp_index){
   }
   
   covar_matrix <- toeplitz(covar_first_row)
-  x <- mvtnorm::rmvnorm(ts_length, mean = rep(0, times = num_of_vars), 
+  
+  
+  x <- mvtnorm::rmvnorm(ts_length*sim_runs, mean = rep(0, times = num_of_vars), 
                         sigma = covar_matrix )
   
   ### resize the coefs to match the desired r_squared:
@@ -97,9 +103,10 @@ simulate_dgp <- function(X, dgp_index){
     resized_coefs <- sqrt(denom/nomin)*coefs
   }
   
+  
   ### generate y_i-s:
   
-  y <- rowSums(t(resized_coefs * t(x))) + rnorm(ts_length, mean = 0, sd = 1)
+  y <- rowSums(t(resized_coefs * t(x))) + rnorm(ts_length*sim_runs, mean = 0, sd = 1)
   
   # store generated time series in storage matrix X
   X[[dgp_index]]$sim_data$x <- x
@@ -111,6 +118,57 @@ simulate_dgp <- function(X, dgp_index){
   
   return(X)
   
+}
+
+
+train_gradient <- function(y_data, x_data, incl_const = 1, 
+                              l_rate = 0.5, n_iter = 100){
+  
+  ### traines a linear model with gradient descent. 
+  # returns the estiamted coefficients in a vector.
+  # first element of the vector is the constant (even if set to zero),
+  # other elements are the slopes of the independent variables in order.
+  
+  # inputs:
+  # y_data: targets used for training. numeric vector/matrix.
+  # x_data: numeric matrix of predictors. nrow must be equal to length og y_data.
+  # incl_const: numeric scalar, either 1 or 0. If == 1, a constant is estimated, 
+  # if == 0, constant is set to 0.
+  # l_rate is the learning rate, 
+  # n_iter is the number of iterations in the gradient descent.
+  
+  
+  
+  # check if input has the expected properties, stop with error if not
+  stopifnot((incl_const == 0 | incl_const == 1), class(l_rate) == "numeric", 
+            class(n_iter) == "numeric", nrow(x_data) == length(y_data))
+  
+  # preset params
+  const <- 0
+  b_hat <- rep(0, times = ncol(x_data))
+  
+  x_data <- t(x_data)
+  n_data <- length(y_data)
+  
+  for (i in c(1:n_iter)){
+    # calculate prediction
+    prediction <- const*incl_const + t(b_hat) %*% x_data
+    
+    # calculate gradients
+    
+    gradient_const <- sum((prediction - y_data)*incl_const)
+    gradient_b_hat <- x_data %*% t(prediction - y_data)
+    
+    # calculate mean of gradient
+    mean_grad_const <- gradient_const/n_data 
+    mean_grad_b_hat <- gradient_b_hat/n_data 
+    
+    # update parameters by small part of averaged gradient
+    const <- const - l_rate * mean_grad_const 
+    b_hat <- b_hat - l_rate * mean_grad_b_hat
+  }
+  
+  return(c(const, b_hat))
 }
 
 ### próba
