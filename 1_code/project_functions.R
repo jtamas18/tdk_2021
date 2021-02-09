@@ -171,8 +171,105 @@ train_gradient <- function(y_data, x_data, incl_const = 1,
   return(c(const, b_hat))
 }
 
+predict_custom <- function(x_data, coefs){
+  
+  ### makes a prediction based on the linear model with coefs
+  # and independent variables in x_data. returns prediction
+  
+  prediction <- coefs[1] + x_data %*% coefs[-1]
+  
+  return(prediction)
+} 
+
+forecast <- function(y_data,x_data,init_train, incl_cons, method = "gd"){
+  
+  ### function that forecasts values in y_data with variables from x_data.
+  # uses expanding window, with initial training data length of "init_train"
+  # can be estimated by "analytic" or "gradient descent" (gd) methods.
+  
+  # inputs:
+  # y_data: targets to forecast
+  # x_data: predictors
+  # init_train: initial length of training data
+  # incl_cons: == 1 if a constant is to be included, 0 otherwise
+  # method: == "gd" if estimation is by gradient descent, "analytic" 
+  # if estimation by traditinal matrix inversion.
+  
+  # check if input has the expected properties, stop with error if not
+  stopifnot((incl_cons == 0 | incl_cons == 1), class(init_train) == "numeric", 
+            (method == "gd" | method == "analytic"), nrow(x_data) == length(y_data))
+  
+  # get length of data
+  len <- length(y_data)
+  
+  # preset return values
+  forecasted_vals <- rep(NA, times = len - init_train)
+  coefs_estimate <- matrix(data = NA, nrow = len - init_train, 
+                           ncol = ncol(x_data) + 1)
+  i <- 1
+  
+  if (method == "gd"){
+    for (window_length in c(init_train:(len-1))){
+    
+      # train model on train data
+      coefs <- train_gradient(y_data[1:window_length], x_data[1:window_length,], 
+                   incl_const = incl_cons)
+    
+      # forecast with trained model
+      pred <- predict_custom(x_data = x_data[window_length+1,], coefs = coefs)
+    
+      # save forecast and estimated coefs
+      forecasted_vals[i] <- pred
+      coefs_estimate[i,] <- coefs
+    
+      i <- i + 1
+    }
+  } else if (method == "analytic"){
+    
+    for (window_length in c(init_train:(len-1))){
+      
+      # train lin model by matrix inversion
+      # do not include intercept if incl_cons == 0
+      if (incl_cons == 1){
+        lin_model <- lm(formula = y_data[1:window_length] ~ ., 
+                        data = as.data.frame(x_data[1:window_length,]))
+        # get coefs
+        coefs <- lin_model$coefficients
+      } else {
+        lin_model <- lm(formula = y_data[1:window_length] ~ . + 0, 
+                        data = as.data.frame(x_data[1:window_length,]))
+        # get coefs
+        coefs <- c(0,as.vector(lin_model$coefficients))
+      }
+      
+      
+      # forecast with trained model
+      pred <- predict_custom(x_data = x_data[window_length + 1,], coefs = coefs)
+      
+      # save forecast and estimated coefs
+      forecasted_vals[i] <- pred
+      coefs_estimate[i,] <- coefs
+      
+      i <- i + 1
+      }
+  }
+  
+  
+  return(list(forecasted_vals, coefs_estimate))
+    
+}
+  
+  
+
+
 ### próba
 X <- list()
 X <- def_dgp_params(X, coefs = c(1,1,0,0), r_squared = 0.9, correl = 0.3, num_of_vars = 4, len = 500)
 X <- simulate_dgp(X,1)
 
+forecast_test <- forecast(X$DGP_1$sim_data$y[1:100], 
+                          X$DGP_1$sim_data$x[1:100,1:4], 
+                          30, incl_cons = 0)
+forecast_test_an <- forecast(X$DGP_1$sim_data$y[1:100], 
+                             X$DGP_1$sim_data$x[1:100,1:4], 30, 
+                             incl_cons = 0, method = "analytic")
