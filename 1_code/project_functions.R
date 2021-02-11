@@ -60,7 +60,7 @@ simulate_dgp <- function(X, dgp_index){
   # are taken from "X$DGP_1$..."
   
   # check if input has the expected properties, stop with error if not
-  stopifnot(class(X) == "list", class(coefs) == "numeric")
+  stopifnot(class(X) == "list", class(dgp_index) == "numeric")
   
   
   # take parameters from "X$DGP_[n]$dgp_parameters:
@@ -258,18 +258,114 @@ forecast <- function(y_data,x_data,init_train, incl_cons, method = "gd"){
   return(list(forecasted_vals, coefs_estimate))
     
 }
+
+forecast_hist_avg <- function(y_data,init_train){
+  
+  ### calculates forecasts in y_data based on previous historical average.
+  ### uses expnading window with initial training window length of "init_train".
+  
+  # check if input has the expected properties, stop with error if not
+  stopifnot(class(y_data) == "numeric", class(init_train) == "numeric", 
+            length(y_data) > init_train)
   
   
+  # get length of data
+  len <- length(y_data)
+  
+  # preset return value
+  forecasted_vals <- rep(NA, times = len - init_train)
+  i <- 1
+  
+  
+  for (window_length in c(init_train:(len-1))){
+    
+    # train lin model with only intercept
+    hist_avg <- mean(y_data[1:window_length])
+    
+    # save hist_avg as forecast
+    forecasted_vals[i] <- hist_avg
+    
+    i <- i + 1
+  }
+  
+  return(forecasted_vals)
+}
 
+  
+calc_MSE <- function(predictions, targets){
+  
+  ### calculates MSE, with "predictons" as a vector of predictions 
+  ### and "targets" as a vector of targets.
+  
+  # check if input has the expected properties, stop with error if not
+  stopifnot(class(predictions) == "numeric", class(targets) == "numeric",
+            length(predictions) == length(targets))
+  
+  # calculate MSE
+  MSE <- sum((predictions - targets)^2)*(1/length(predictions))
+  
+  return(MSE)
+}
 
+calc_r_squared <- function(targets, predictions, hist_avg_pred){
+  
+  ### calculates out of sample R^2 of the predictions in vector "predictions".
+  
+  # check if input has the expected properties, stop with error if not
+  stopifnot(class(predictions) == "numeric", class(targets) == "numeric", 
+            class(hist_avg_pred) == "numeric", length(predictions) == length(targets), 
+            length(predictions) == length(targets))
+  
+  MSE_pred <- calc_MSE(predictions, targets)
+  MSE_hist_avg <- calc_MSE(hist_avg_pred, targets)
+  r_squared <- 1 - MSE_pred/MSE_hist_avg
+  
+  return(r_squared)
+}
+
+clark_west_test <- function(targets, predictions, hist_avg_pred){
+  
+  ### calculates t-statistic and p-values for one-sided Clark & West test
+  # null hypothesis: no difference between predictive power of predictions 
+  # and benchmark. Alt hypothesis: predictions better forecasts targets 
+  # than benchmark.
+  
+  # calculates t-  & p-values as in Rapach(2009).
+
+  # check if input has the expected properties, stop with error if not
+  stopifnot(class(predictions) == "numeric", class(targets) == "numeric",
+            class(hist_avg_pred) == "numeric", length(predictions) == length(targets),
+            length(hist_avg_pred) == length(targets))
+  
+  # calculate data for clark & west regression
+  c_w_data <- (targets - hist_avg_pred)^2 - ((targets - predictions)^2 - (hist_avg_pred - predictions)^2)
+  
+  c_w_model <- lm(formula = c_w_data ~ 1)
+  
+  t_stat <- summary(c_w_model)[["coefficients"]][, "t value"]
+  p_value <- 1 - pnorm(t_stat)
+  
+  return(c(t_stat, p_value))
+  
+}
+  
 ### próba
 X <- list()
 X <- def_dgp_params(X, coefs = c(1,1,0,0), r_squared = 0.9, correl = 0.3, num_of_vars = 4, len = 500)
 X <- simulate_dgp(X,1)
 
-forecast_test <- forecast(X$DGP_1$sim_data$y[1:100], 
-                          X$DGP_1$sim_data$x[1:100,1:4], 
-                          30, incl_cons = 0)
-forecast_test_an <- forecast(X$DGP_1$sim_data$y[1:100], 
-                             X$DGP_1$sim_data$x[1:100,1:4], 30, 
+len <- 200
+init_train <- 70
+
+y_test_data <- X$DGP_1$sim_data$y[1:len]
+x_test_data <- X$DGP_1$sim_data$x[1:len, 1:4]
+
+forecast_test <- forecast(y_test_data, 
+                          x_test_data, 
+                          init_train, incl_cons = 0)
+forecast_test_an <- forecast(y_test_data, x_test_data, init_train, 
                              incl_cons = 0, method = "analytic")
+
+cw_test <- clark_west_test(y_test_data[(init_train+1):len], forecast_test[[1]], 
+                forecast_hist_avg(y_test_data, init_train))
+cw_test
