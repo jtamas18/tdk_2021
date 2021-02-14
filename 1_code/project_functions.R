@@ -171,6 +171,62 @@ train_gradient <- function(y_data, x_data, incl_const = 1,
   return(c(const, b_hat))
 }
 
+
+train_ncl <- function(y_data, x_data_selected, lambda, incl_const = 1, 
+                      l_rate = 0.5, n_iter = 100){
+  
+  
+  num_models <- length(x_data_selected)
+  num_vars <- ncol(x_data_selected[[1]])
+  n_data <- length(y_data)
+  
+  # preset params and storage objects
+  coef_matrix <- matrix(data = 0, nrow = num_models, ncol = num_vars + 1)
+  gradient_coefs <- matrix(nrow = num_models, ncol = num_vars)
+  prediction <- matrix(nrow = num_models, ncol = n_data)
+  fc_prediction <- rep(0, times = n_data)
+  
+  # gd iteration
+  for (i in c(1:n_iter)){
+    
+    # calculate predictions for all models:
+    for (model in c(1:num_models)){
+      prediction[model,] <- coef_matrix[model,1]*incl_const + 
+        x_data_selected[[model]] %*% coef_matrix[model,-1]
+      a <- x_data_selected[[model]] %*% coef_matrix[model,-1]
+    }
+    
+    # calculate fc_prediction:
+    fc_prediction <- colSums(prediction)/num_models
+    
+    
+    # calculate gradients:
+    gradient_const <- (rowSums(t(t(prediction) - y_data)) - 
+                         lambda*( rowSums(t(t(prediction) - fc_prediction)) ))*incl_const
+    
+    for (model in c(1:num_models)){
+      temp <- (prediction[model,] - y_data) - 
+        lambda*(prediction[model,] - fc_prediction)
+      temp <- temp %*% x_data_selected[[model]]
+      gradient_coefs[model,] <- temp
+    }
+    
+    # calc mean of gradient
+    mean_grad_const <- gradient_const/n_data
+    mean_grad_coefs <- gradient_coefs/n_data
+    
+    # recalculate coefs
+    coef_matrix[,1] <- coef_matrix[,1] - l_rate*mean_grad_const
+    coef_matrix[,-1] <- coef_matrix[,-1] - l_rate*mean_grad_coefs
+    
+    # recalculate fc_prediction
+  }
+  
+  # return coef
+  return(coef_matrix)
+}
+
+
 predict_custom <- function(x_data, coefs){
   
   ### makes a prediction based on the linear model with coefs
@@ -198,6 +254,7 @@ forecast <- function(y_data,x_data,init_train, incl_cons, method = "gd"){
   # check if input has the expected properties, stop with error if not
   stopifnot((incl_cons == 0 | incl_cons == 1), class(init_train) == "numeric", 
             (method == "gd" | method == "analytic"), nrow(x_data) == length(y_data))
+  
   
   # get length of data
   len <- length(y_data)
@@ -240,6 +297,7 @@ forecast <- function(y_data,x_data,init_train, incl_cons, method = "gd"){
                         data = as.data.frame(x_data[1:window_length,]))
         # get coefs
         coefs <- c(0,as.vector(lin_model$coefficients))
+        coefs <- replace(coefs, is.na(coefs), 0)
       }
       
       
@@ -257,6 +315,154 @@ forecast <- function(y_data,x_data,init_train, incl_cons, method = "gd"){
   
   return(list(forecasted_vals, coefs_estimate))
     
+}
+
+
+forecast_ncl <- function(y_data, x_data_selected, init_train, incl_cons, lambda = 0.1){
+  
+  ### function that forecasts values in y_data with data from x_data_selected
+  # uses expanding window, with initial training data length of "init_train"
+  # estimated with ncl error, minimised by gradient descent.
+  
+  # inputs:
+  # y_data: targets to forecast
+  # x_data_selected: list of ind variables for each model
+  # init_train: initial length of training data
+  # incl_cons: == 1 if a constant is to be included, 0 otherwise
+  # lambda: ncl penalty term
+  
+  # check if input has the expected properties, stop with error if not
+  stopifnot((incl_cons == 0 | incl_cons == 1), class(init_train) == "numeric", 
+            class(lambda) == "numeric")
+  
+  
+  # get lengths/nums
+  len <- length(y_data)
+  num_models <- length(x_data_selected)
+  num_vars <- ncol(x_data_selected[[1]])
+  
+  # preset return values and storages
+  forecasted_vals <- matrix(nrow = num_models, ncol = len - init_train)
+  coefs_estimate <- array(data = NA, dim = c(len - init_train, num_vars + 1, num_models))
+  return_list <- list()
+  resized_x_data_selected <- list()
+  
+  i <- 1
+  
+  for (window_length in c(init_train:(len-1))){
+    
+    # resite x_data_selected
+    for (n in c(1:num_models)){
+      resized_x_data_selected[[n]] <- x_data_selected[[n]][1:window_length,]
+    }
+    
+    # train model on train data
+    coefs <- train_ncl(y_data[1:window_length], resized_x_data_selected, 
+                       lambda = lambda, incl_const = incl_cons)
+    
+    # get individual forecasts and coefs from trained models
+    for (model in c(1:num_models)){
+      forecasted_vals[model,i] <- predict_custom(x_data = x_data_selected[[model]][window_length+1,], 
+                                                 coefs = coefs[model,])
+      coefs_estimate[i,,model] <- coefs[model,]
+    }
+    
+    i <- i + 1
+  }
+  
+  
+  # save ind forecasts and coefs in desired output format
+  for (model in c(1:num_models)){
+    temp_list <- list(forecasted_vals[model,], coefs_estimate[,,model])
+    return_list[[model]] <- temp_list
+  }
+  
+  return(return_list)
+  
+}
+
+
+x_data_selector <- function(x_data, selector_matrix){
+  
+  ### select independent variables (columns) from x_data: 
+  # "non-selected" columns are set to zero.
+  
+  # inputs: x_data is the matrix of all independent variables, size nxp
+  # and selector_matrix is a matrix with 1s in the main diagonal for
+  # columns to keep, size pxp
+  
+  # check if input has the expected properties, stop with error if not
+  stopifnot(class(x_data) == "matrix", class(selector_matrix) == "matrix",
+            ncol(x_data) == nrow(selector_matrix), ncol(x_data) == ncol(selector_matrix))
+  
+  # select desired data with matrix multiplication
+  x_data_selected <- x_data %*% selector_matrix
+  return(x_data_selected)
+}
+
+
+forecast_fc <- function(y_data, x_data, selector_mat_list, init_train, incl_cons, 
+                        method = "traditional", lambda = 0.1){
+  
+  # forecasts y_data with a combination of forecasts using information in x_data.
+  # individual models are determined by selector_mat_list
+  
+  # inputs:
+  # y_data: data to be forecasted.
+  # x_data: independent variables
+  # selector_mat_list: list of n diagonal matrices. 
+  # determines the individual models.
+  # init_train: initial training window lenght.
+  # incl_cons: if == 1, a constant is included.
+  # method: determines if traditional or ncl training should be used.
+  
+  num_models <- length(selector_mat_list)
+  num_ind_variables <- ncol(x_data)
+  
+  # preset variables
+  x_data_selected <- list()
+  ind_forecasts <- list()
+  
+  # list models
+  for (i in c(1:num_models)){
+    x_data_selected[[i]] <- x_data_selector(x_data, selector_mat_list[[i]])
+  }
+  
+  # train forecasts
+  
+  if (method == "traditional"){
+    for (i in c(1:num_models)){
+      ind_forecasts[[i]] <- forecast(y_data, x_data_selected[[i]], init_train, 
+                                     incl_cons, method = "analytic")
+    }
+  } else if (method == "ncl"){
+    
+    ind_forecasts <- forecast_ncl(y_data, x_data_selected, init_train, incl_cons, lambda = lambda)
+    
+  }
+  
+  
+  ##  average forecasts
+  # store individual forecasts and coefs in vars
+  forecast_length <- length(ind_forecasts[[1]][[1]])
+  
+  forecasted_vals_ind <- matrix(nrow = num_models, ncol = forecast_length)
+  coefs_ind <- array(dim = c(forecast_length, num_ind_variables + 1, num_models))
+  
+  for (i in c(1:num_models)){
+    forecasted_vals_ind[i,] <- ind_forecasts[[i]][[1]]
+    coefs_ind[,,i] <- ind_forecasts[[i]][[2]]
+  }
+  
+  fc_forecasts <- apply(forecasted_vals_ind, 2, mean)
+  fc_coefs <- apply(coefs_ind,c(1,2),mean)
+  
+  # return
+  result_list <- list(fc_forecast = fc_forecasts, fc_coef = fc_coefs, 
+                      ind_forecast = forecasted_vals_ind, ind_coef = coefs_ind)
+  
+  return(result_list)
+  
 }
 
 forecast_hist_avg <- function(y_data,init_train){
@@ -351,7 +557,7 @@ clark_west_test <- function(targets, predictions, hist_avg_pred){
   
 ### próba
 X <- list()
-X <- def_dgp_params(X, coefs = c(1,1,0,0), r_squared = 0.9, correl = 0.3, num_of_vars = 4, len = 500)
+X <- def_dgp_params(X, coefs = c(1,1,0,0), r_squared = 0.02, correl = 0.8, num_of_vars = 4, len = 200)
 X <- simulate_dgp(X,1)
 
 len <- 200
@@ -363,9 +569,112 @@ x_test_data <- X$DGP_1$sim_data$x[1:len, 1:4]
 forecast_test <- forecast(y_test_data, 
                           x_test_data, 
                           init_train, incl_cons = 0)
-forecast_test_an <- forecast(y_test_data, x_test_data, init_train, 
+
+forecast_test_analytic <- forecast(y_test_data, x_test_data, init_train, 
                              incl_cons = 0, method = "analytic")
 
 cw_test <- clark_west_test(y_test_data[(init_train+1):len], forecast_test[[1]], 
                 forecast_hist_avg(y_test_data, init_train))
-cw_test
+
+selector_mat_list <- list()
+
+for (i in c(1:4)){
+  
+  diag_vect <- rep(0, times = 4)
+  diag_vect[i] <- 1
+  selector_mat_list[[i]] <- diag(diag_vect)  
+}
+
+trad_univariate_test <- forecast_fc(y_test_data, x_test_data, 
+                                    selector_mat_list, init_train, incl_cons = 0)
+
+
+### choose each univariate model
+
+selector_mat_list <- list()
+
+for (i in c(1:4)){
+  
+  diag_vect <- rep(0, times = 4)
+  diag_vect[i] <- 1
+  selector_mat_list[[i]] <- diag(diag_vect)  
+}
+
+x_data_selected <- list()
+
+for (i in c(1:4)){
+  x_data_selected[[i]] <- x_data_selector(x_test_data, selector_mat_list[[i]])
+}
+
+### test train_ncl
+
+ncl_univariate_train_test <- train_ncl(y_test_data, x_data_selected, 0.1, incl_const = 0)
+
+
+### test forecast_ncl
+
+forecast_ncl(y_test_data, x_data_selected, init_train, 0)
+
+ncl_univariate_test <- forecast_fc(y_test_data, x_test_data, 
+                                    selector_mat_list, init_train, incl_cons = 0, method = "ncl", lambda = 1.0)
+
+# get MSE
+calc_MSE(trad_univariate_test$fc_forecast,y_test_data[71:200])
+calc_MSE(ncl_univariate_test$fc_forecast,y_test_data[71:200])
+calc_MSE(forecast_test[[1]],y_test_data[71:200])
+
+
+
+
+
+
+
+
+
+
+
+### test
+
+X <- list()
+X <- def_dgp_params(X, coefs = c(1,1,0,0), r_squared = 0.05, correl = 0.6, num_of_vars = 4, len = 200)
+X <- simulate_dgp(X,1)
+
+len <- 200
+init_train <- 70
+
+y_test_data <- X$DGP_1$sim_data$y[1:len]
+x_test_data <- X$DGP_1$sim_data$x[1:len, 1:4]
+
+forecast_test <- forecast(y_test_data, 
+                          x_test_data, 
+                          init_train, incl_cons = 0)
+
+
+
+
+selector_mat_list <- list()
+
+for (i in c(1:4)){
+  
+  diag_vect <- rep(0, times = 4)
+  diag_vect[i] <- 1
+  selector_mat_list[[i]] <- diag(diag_vect)  
+}
+
+x_data_selected <- list()
+
+for (i in c(1:4)){
+  x_data_selected[[i]] <- x_data_selector(x_test_data, selector_mat_list[[i]])
+}
+
+trad_univariate_test <- forecast_fc(y_test_data, x_test_data, 
+                                    selector_mat_list, init_train, incl_cons = 0)
+
+ncl_univariate_test <- forecast_fc(y_test_data, x_test_data, 
+                                   selector_mat_list, init_train, incl_cons = 0, method = "ncl", lambda = 0.2)
+
+calc_MSE(trad_univariate_test$fc_forecast,y_test_data[71:200])
+calc_MSE(ncl_univariate_test$fc_forecast,y_test_data[71:200])
+calc_MSE(forecast_test[[1]],y_test_data[71:200])
+
+
